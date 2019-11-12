@@ -32,5 +32,5 @@
 
 4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况，具体的例子，我还没找到～ 留个坑。
 
-5. stream的设计就是为nodejs加上一个backpressuring的机制，也是为了效率。
+5. stream的设计就是为nodejs加上一个backpressuring的机制，也是为了效率。阅读stream之前，请确保你已经阅读了event和buffer模块，因为stream本质上就是event，在此基础上利用buffer搭建出来的模块。
 
