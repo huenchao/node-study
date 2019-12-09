@@ -39,4 +39,13 @@
 
 7. child_process
 
+8. cluster
+
+9. net
+
+10. http
+
+11. https
+
+12. worker
 
