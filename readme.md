@@ -37,7 +37,7 @@
 
 6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用。
 
-7. child_process 我们需要关注spawn
+7. child_process 你要知道的是不管是fork、execfile（exec）最后都是整理参数然后调用spawn，然后把重点放到`internal/child_process`里。
 
 8. cluster
 
