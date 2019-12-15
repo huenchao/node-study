@@ -35,9 +35,9 @@
 
 5. stream的设计就是为nodejs加上一个背压的机制，也是为了效率。那怎么实现这个背压呢？其实就是利用内部事件的设计，数据生产消费不平衡了，就发送事件让一方等一等，数据缓存到哪里呢？那就用buffer。所以，你在阅读stream之前，请确保你已经阅读了event和buffer模块，因为stream本质上就是event+buffer。这一章非常关键，也比较难，难在内部状态很多。
 
-6. os模块就是利用libuv里面的一些c方法，操作一些系统文件而已。
+6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用。
 
-7. child_process
+7. child_process 我们需要关注spawn
 
 8. cluster
 
