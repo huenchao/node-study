@@ -39,7 +39,7 @@
 
 7. child_process 你要知道的是不管是fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`。到目前为止，都是js层面的，接下来c/c++层面了，关键点在于`this._handle`是`ProcessWrap`的实例。静态方法spawn其实调用的是libuv的uv_spawn.
 
-8. cluster (内部用的是fork，简单提一下fork这个api，内部就是把file设置成`process.execPath`,然后走7.的步骤)
+8. cluster (简单提一下7.提到的`fork`这个api，内部就是把file设置成`process.execPath`,cluster.fork内部就是直接调用的`fork`，然后用一个`worker`包裹一下)
 
 9. net
 
