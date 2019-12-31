@@ -38,7 +38,7 @@
 6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用。
 
 7. child_process 
-  - 如何生成一个子进程：你要知道的是不管是fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`。到目前为止，都是js层面的，接下来c/c++层面了，关键点在于`this._handle`是`ProcessWrap`的实例。静态方法spawn其实调用的是libuv的uv_spawn。uv_spawn里面还有一些细节的地方，比如会判断是否需要IPC通信，需要的话，会通过dup2重定向。
+  - 如何生成一个子进程：fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`。到目前为止，都是js层面的，接下来c/c++层面了，关键点在于`this._handle`是`ProcessWrap`的实例。静态方法spawn其实是会调用libuv的uv_spawn。uv_spawn会创建一个进程，另外里面还有一些细节处理的地方，比如会判断是否需要IPC通信，需要的话，会通过dup2重定向。
   - nodejs的父子进程如何实现IPC通信：每个nodejs进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的(fork的会注入一个`process.env.NODE_CHANNEL_FD`)的环境变量，是子进程的话就调用`require('child_process')._forkChild(fd);`。
 
 8. cluster (简单提一下7.提到的`fork`这个api，内部就是把file设置成`process.execPath`,cluster.fork内部就是直接调用的`fork`，然后用一个`worker`包裹一下)
