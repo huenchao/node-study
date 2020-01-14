@@ -39,7 +39,7 @@
 
 7. child_process 我们关注两个问题:
    1. 第一是如何创建子进程的？js的fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`(其中`this._handle`是`ProcessWrap`的实例,静态方法spawn其实是会调用libuv的`uv_spawn`)。`uv_spawn`里是通过系统调用`fork`的方式创建进程。
-   2. 第二是IPC是怎么实现的？在`uv_spawn`的执行过程中，会判断是不是需要ipc通信，因为在js层面调用fork的时候，会在stdio数据里添加一个`ipc`的字符元素，标识需要ipc,stdio最终呈现的形式类似是这个样子:`[inherits,inherits,inherits,ipc]`.ipc在数组的索引是3，记住，它一定是3！然后会调用`socketpair`生成真正的管道的fd,然后调用fork开启一个子进程，子进程里会调用`uv__process_child_init`,这个函数调用dup2把真正的管道的fd重定向到ipc的索引上，也就是前面提到的3.然后nodejs子进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的(fork的会注入一个`process.env.NODE_CHANNEL_FD`)的环境变量(这个变量的值就是3，因为子进程需要绑定这个fd，去和父进程通信)。是子进程的话就调用`require('child_process')._forkChild(3);`。然后`_forkChild`会通过管道让子进程链到父进程开辟的ipc通信专用管道上。具体需要看一眼`setupChannel`,
+   2. 第二是IPC是怎么实现的？在`uv_spawn`的执行过程中，会判断是不是需要ipc通信，因为在js层面调用fork的时候，会在stdio数据里添加一个`ipc`的字符元素，标识需要ipc,stdio最终呈现的形式类似是这个样子:`[inherits,inherits,inherits,ipc]`.ipc在数组的索引是3，记住，它一定是3！然后会调用`socketpair`生成真正的管道的fd,然后调用fork开启一个子进程，子进程里会调用`uv__process_child_init`,这个函数调用dup2把真正的管道的fd重定向到ipc的索引上，也就是前面提到的3.然后nodejs子进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的(fork的会注入一个`process.env.NODE_CHANNEL_FD`)的环境变量(这个变量的值就是3，因为子进程需要绑定这个fd，去和父进程通信)。是子进程的话就调用`require('child_process')._forkChild(3);`。然后`_forkChild`会通过管道让子进程链到父进程开辟的ipc通信专用管道上。然后调用`setupChannel`,它的作用是给子进程和父进程里的child变量附上send方法，监听事件的方法。这样 `子进程<--->fd3<---->父进程` 就这样抽象的连接上了。这里由于篇幅原因，留个`setupChannel`在第8节讲，比较我们ipc基本基于send方法传递数据。
   
 8. cluster (简单提一下7.提到的`fork`这个api，内部就是把file设置成`process.execPath`,cluster.fork内部就是直接调用的`fork`，然后用一个`worker`包裹一下)
 
