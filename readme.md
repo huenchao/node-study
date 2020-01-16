@@ -44,8 +44,8 @@
   
 8. cluster cluster模块本质上是对child_process的封装，我们先过一遍它的流程：`cluster.fork` --->`cp=child_process#fork()`--->`retun new worker(cp)`。这套流程其实就是调用了child_process#fork()，然后把子进程实例用一个worker对象包裹一下返回出来。`NODE_UNIQUE_ID`这个环境变量会在child_process#fork()时传进去，它是为了判断是不是子进程内使用cluster模块而已,这是它的唯一作用。这个模块似乎也就这么点东西，那这一章节我们总要关注点什么，这个问题或许你曾经好奇过：为什么fork的进程里调用多次server.listen(PORT)，却没有报`EADDRINUSE`的错误？其实解决方案或许可以在上一章节找到，但毕竟调用了`server.listen`，内部原理还与net模块有关,我将会在第9章揭开这个谜题。
 
-9. net net模块除了在底层操作了tcp服务构建的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` ---> `s.listen(...args)`--->`listenInCluster(...args)`。`listenInCluster`里会区分子进程还是master，master就调用`server._listen2`,如果是子进程就调用`cluster._getServer`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！接下来我好奇两个问题：
-   1. master的server接收了请求，为什么事实上看上去是子进程处理的，毕竟我们的处理逻辑都写在了子进程的代码里？
+9. net net模块除了在底层操作了tcp服务构建的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` ---> `s.listen(...args)`--->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！接下来我好奇两个问题：
+   1. master的server接收了请求，为什么事实上看上去是子进程处理的，毕竟我们的处理逻辑都写在了子进程的代码里？我们再回到`cluster._getServer(server, serverQuery, listenOnMasterHandle)` ---> `send(message,cb)`--->`cb()` ---`rr()`
   
  
 
