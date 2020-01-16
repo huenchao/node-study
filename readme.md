@@ -29,27 +29,27 @@
 
 ```
 
-3. event的设计就是很常见的pub/sub模式，它的设计里没有任何“异步”的操作，event是node的基石模块！
+3. event的设计就是很常见的pub/sub模式，它的设计里没有任何“异步”的操作，event是node的基石模块，细节看issue。
 
-4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况。
+4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况，细节看issue。
 
-5. stream的设计就是为nodejs加上一个背压的机制，也是为了效率。那怎么实现这个背压呢？其实就是利用event模块的能力，数据生产消费不平衡了，就发送事件让一方等一等，数据缓存到哪里呢？那就用buffer(或者直接是原生object)。所以，你在阅读stream之前，请确保你已经阅读了event和buffer模块，因为stream本质上就是event+buffer。这一章非常关键，也比较难，难在内部状态很多，但是你要牢记，它总在“尽可能快”的触发事件通知生产者或者消费者去造数据或者消费数据。
+5. stream的设计就是为nodejs加上一个背压的机制，也是为了效率。那怎么实现这个背压呢？其实就是利用event模块的能力，数据生产消费不平衡了，就发送事件让一方等一等，数据缓存到哪里呢？那就用buffer(或者直接是原生object)。所以，你在阅读stream之前，请确保你已经阅读了event和buffer模块，因为stream本质上就是event+buffer。这一章非常关键，也比较难，难在内部状态很多，但是你要牢记，它总在“尽可能快”的触发事件通知生产者或者消费者去造数据或者消费数据，细节看issue。
 
-6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用。
+6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用，细节看issue。
 
 7. child_process 我们关注以下三个问题:
    1. 第一是如何创建子进程的？js的fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`(其中`this._handle`是`ProcessWrap`的实例,静态方法spawn其实是会调用libuv的`uv_spawn`)。`uv_spawn`里是通过系统调用`fork`的方式创建进程。
    2. 第二是IPC是怎么实现的？在`uv_spawn`的执行过程中，会判断是不是需要ipc通信，因为在js层面调用fork的时候，会在stdio数据里添加一个`ipc`的字符元素，标识需要ipc,stdio最终呈现的形式类似是这个样子:`[inherits,inherits,inherits,ipc]`.ipc在数组的索引是3，记住，它一定是3！然后会调用`socketpair`生成真正的管道的fd,然后调用fork开启一个子进程，子进程里会调用`uv__process_child_init`,这个函数调用dup2把真正的管道的fd重定向到ipc的索引值上，也就是前面提到的3.然后nodejs子进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的？fork启动的会注入一个`NODE_CHANNEL_FD`的环境变量(这个变量的值就是3，因为子进程需要绑定这个fd，去和父进程通信)。是子进程的话就调用`require('child_process')._forkChild(fd);`。然后`_forkChild`会通过管道让子进程链到父进程开辟的ipc通信专用管道上。然后调用`setupChannel`,它的作用是给子进程和父进程里的child变量附上send方法，监听`internalMessage`内部事件。这样 `子进程<--->（序列化/反序列化）<---> fd 3 <--->（序列化/反序列化）<---->父进程` 就这样抽象的连接上了，最后通过`src/stream_base.cc`中的`StreamBase::WriteString`实现在父子进程间传递。
    3. IPC通信时，`net.Server#getConnections`，`net.Server#close`失效咋恢复？ 序列化/反序列化会导致部分实例的api失效，原因很简单，数据是存在内存里的，序列化后就失效了。node内部会对handle类型进行判断，用`handleConversion`的序列化/反序列化方法，去把handle还原。我们再深入一下第二个问题，如果`send`方法被调用时有handle，会在message对象里设置一个cmd的属性，它有个固定的值`NODE_HANDLE`,`NODE_`开头的cmd值代表它是内部信息，需要特殊处理，然后触发`internalMessage`事件，然后用从`handleConversion`特定的方法还原成js对象,最后在`emit`一个`message`，把还原信息丢给用户层。仔细看源码，你会发现有个`getSocketList`方法，在它里面会调用`SocketListSend`或`SocketListReceive`，这两个api的作用就是用来保存这些在父子进程中使用的handle。然后每次在调用与内存有关系的相关api时，会结合这两个方法，相互通信父子进程，维护这些handles的内存状态。
   
-8. cluster cluster模块本质上是对child_process的封装，我们先过一遍它的流程：`cluster.fork` -->`cp=child_process#fork()`-->`retun new worker(cp)`。这套流程其实就是调用了child_process#fork()，然后把子进程实例用一个worker对象包裹一下返回出来。`NODE_UNIQUE_ID`这个环境变量会在child_process#fork()时传进去，它是为了判断是不是子进程内使用cluster模块而已,这是它的唯一作用。这个模块似乎也就这么点东西，那这一章节我们总要关注点什么，这个问题或许你曾经好奇过：为什么fork的进程里调用多次server.listen(PORT)，却没有报`EADDRINUSE`的错误？其实解决方案或许可以在上一章节找到，但毕竟调用了`server.listen`，内部原理还与net模块有关,我将会在第9章揭开这个谜题。
+8. cluster cluster模块本质上是对child_process的封装，我们先过一遍它的流程：`cluster.fork` -->`cp=child_process#fork()`-->`return new worker(cp)`。这套流程其实就是调用了child_process#fork()，然后把子进程实例用一个worker对象包裹一下返回出来。`NODE_UNIQUE_ID`这个环境变量会在child_process#fork()时传进去，它是为了判断是不是子进程内使用cluster模块而已,这是它的唯一作用。这个模块似乎也就这么点东西，那这一章节我们总要关注点什么，这个问题或许你曾经好奇过：为什么fork的进程里调用多次server.listen(PORT)，却没有报`EADDRINUSE`的错误？其实解决方案或许可以在上一章节找到，但毕竟调用了`server.listen`，内部原理还与net模块有关,我将会在第9章揭开这个谜题。
 
 9. net net模块里除了构建的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` --> `s.listen(...args)`-->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！可是master的server接收了请求，处理逻辑却在子进程中进行？`触发onconnection`-->`RoundRobinHandle#distribute(err, handle)`-->`RoundRobinHandle#handoff`-->` sendHelper(worker.process, message, handle,cb),其中message = { act: 'newconn', key: this.key },handle就是新连接客户端的句柄`。至此，子进程通过管道拿到新连接客户端的句柄，就可以处理了。 
  
-9. net net模块里除了构建tcp/udp的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` --> `s.listen(...args)`-->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！可是master的server接收了请求，处理逻辑却在子进程中进行？`触发onconnection`-->`RoundRobinHandle#distribute(err, handle)`-->`RoundRobinHandle#handoff`-->` sendHelper(worker.process, message, handle,cb),其中message = { act: 'newconn', key: this.key },handle就是新连接客户端的句柄`。至此，子进程通过管道拿到新连接客户端的句柄，就可以处理了。 以上讲解是tcp的流程，其实udp也是类似！
+9. net net模块里除了构建tcp/udp的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` --> `s.listen(...args)`-->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！可是master的server接收了请求，处理逻辑却在子进程中进行？`触发onconnection`-->`RoundRobinHandle#distribute(err, handle)`-->`RoundRobinHandle#handoff`-->` sendHelper(worker.process, message, handle,cb),其中message = { act: 'newconn', key: this.key },handle就是新连接客户端的句柄`。至此，子进程通过管道拿到新连接客户端的句柄，就可以处理了。 以上讲解是tcp在cluster中的流程，其实udp也是类似！
 
-10. http `http = net + httpParser`
-
+10. http `http = net + httpParser` http其实是继承了`net.Server`,以tcp为例的流程：配置`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `请求进来触发connectionListener`-->`connectionListenerInternal`
+-->`利用第5章stream的知识和http_parser`-->parserOnHeadersComplete-->`触发request`-->`如果监听了data，`
 11. https
 
 12. worker
