@@ -29,7 +29,7 @@
 
 ```
 
-3. event的设计就是很常见的pub/sub模式，这里有个疑问我还没明白，为什么一个event实例上需要提示最多绑定10个listener，注释里说帮我们定位内存泄漏？event是node的基石模块！
+3. event的设计就是很常见的pub/sub模式，它的设计里没有任何“异步”的操作，event是node的基石模块！
 
 4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况。
 
@@ -38,11 +38,11 @@
 6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用。
 
 7. child_process 我们关注以下三个问题:
-   1. 第一是如何创建子进程的？js的fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`(其中`this._handle`是`ProcessWrap`的实例,静态方法spawn其实是会调用libuv的`uv_spawn`)。`uv_spawn`里是通过系统调用`fork`的方式创建进程。
-   2. 第二是IPC是怎么实现的？在`uv_spawn`的执行过程中，会判断是不是需要ipc通信，因为在js层面调用fork的时候，会在stdio数据里添加一个`ipc`的字符元素，标识需要ipc,stdio最终呈现的形式类似是这个样子:`[inherits,inherits,inherits,ipc]`.ipc在数组的索引是3，记住，它一定是3！然后会调用`socketpair`生成真正的管道的fd,然后调用fork开启一个子进程，子进程里会调用`uv__process_child_init`,这个函数调用dup2把真正的管道的fd重定向到ipc的索引值上，也就是前面提到的3.然后nodejs子进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的？fork启动的会注入一个`NODE_CHANNEL_FD`的环境变量(这个变量的值就是3，因为子进程需要绑定这个fd，去和父进程通信)。是子进程的话就调用`require('child_process')._forkChild(fd);`。然后`_forkChild`会通过管道让子进程链到父进程开辟的ipc通信专用管道上。然后调用`setupChannel`,它的作用是给子进程和父进程里的child变量附上send方法，监听`internalMessage`内部事件。这样 `子进程<--->（序列化/反序列化）<---> fd 3 <--->（序列化/反序列化）<---->父进程` 就这样抽象的连接上了，最后通过stream在父子进程间传递。
-   3. IPC通信时，`net.Server#getConnections`，`net.Server#close`失效咋恢复？ 序列化/反序列化会导致部分实例的api失效，原因很简单，数据是存在内存里的，序列化后就失效了。node内部会对handle类型进行判断，用`handleConversion`的序列化/反序列化方法，去把handle还原。我们再深入一下第二个问题，如果`send`方法被调用时有handle，会在message对象里设置一个cmd的属性，它有个固定的值`NODE_HANDLE`,`NODE_`开头的cmd值代表它是内部信息，需要特殊处理，然后触发`internalMessage`事件，然后用从`handleConversion`特定的方法还原成js对象,最后在`emit`一个`message`，把还原信息丢给用户层。仔细看源码，你会发现有个`getSocketList`方法，在它里面会调用`SocketListSend`或`SocketListReceive`，这两个api的作用就是用来保存这些在父子进程中使用的handle。然后每次在调用与内存有关系的相关api时，会结合这两个方法，相互通信父子进程，维护这些handles的内存状态。
+   1. >第一是如何创建子进程的？js的fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`(其中`this._handle`是`ProcessWrap`的实例,静态方法spawn其实是会调用libuv的`uv_spawn`)。`uv_spawn`里是通过系统调用`fork`的方式创建进程。
+   2. >第二是IPC是怎么实现的？在`uv_spawn`的执行过程中，会判断是不是需要ipc通信，因为在js层面调用fork的时候，会在stdio数据里添加一个`ipc`的字符元素，标识需要ipc,stdio最终呈现的形式类似是这个样子:`[inherits,inherits,inherits,ipc]`.ipc在数组的索引是3，记住，它一定是3！然后会调用`socketpair`生成真正的管道的fd,然后调用fork开启一个子进程，子进程里会调用`uv__process_child_init`,这个函数调用dup2把真正的管道的fd重定向到ipc的索引值上，也就是前面提到的3.然后nodejs子进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的？fork启动的会注入一个`NODE_CHANNEL_FD`的环境变量(这个变量的值就是3，因为子进程需要绑定这个fd，去和父进程通信)。是子进程的话就调用`require('child_process')._forkChild(fd);`。然后`_forkChild`会通过管道让子进程链到父进程开辟的ipc通信专用管道上。然后调用`setupChannel`,它的作用是给子进程和父进程里的child变量附上send方法，监听`internalMessage`内部事件。这样 `子进程<--->（序列化/反序列化）<---> fd 3 <--->（序列化/反序列化）<---->父进程` 就这样抽象的连接上了，最后通过stream在父子进程间传递。
+   3. >IPC通信时，`net.Server#getConnections`，`net.Server#close`失效咋恢复？ 序列化/反序列化会导致部分实例的api失效，原因很简单，数据是存在内存里的，序列化后就失效了。node内部会对handle类型进行判断，用`handleConversion`的序列化/反序列化方法，去把handle还原。我们再深入一下第二个问题，如果`send`方法被调用时有handle，会在message对象里设置一个cmd的属性，它有个固定的值`NODE_HANDLE`,`NODE_`开头的cmd值代表它是内部信息，需要特殊处理，然后触发`internalMessage`事件，然后用从`handleConversion`特定的方法还原成js对象,最后在`emit`一个`message`，把还原信息丢给用户层。仔细看源码，你会发现有个`getSocketList`方法，在它里面会调用`SocketListSend`或`SocketListReceive`，这两个api的作用就是用来保存这些在父子进程中使用的handle。然后每次在调用与内存有关系的相关api时，会结合这两个方法，相互通信父子进程，维护这些handles的内存状态。
   
-8. cluster (简单提一下7.提到的`fork`这个api，内部就是把file设置成`process.execPath`,cluster.fork内部就是直接调用的`fork`，然后用一个`worker`包裹一下)
+8. cluster cluster模块本质上是对child_process的封装，我们先过一遍它的流程：`cluster.fork` --->`cp=child_process#fork()`--->`retun new worker(cp)`。这套流程其实就是调用了child_process#fork()，然后把子进程实例用一个worker对象包裹一下返回出来。`NODE_UNIQUE_ID`这个环境变量会在child_process#fork()时传进去，它是为了判断是不是子进程内使用cluster模块而已,这是它的唯一作用。这个模块似乎也就这么点东西，那我们关注什么
 
 9. net
 
