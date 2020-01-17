@@ -50,7 +50,6 @@
 
 11. worker 关于worker_thread,我们关心它与child_process的区别，单看架构设计图，它也是拥有一个v8实例，一个libuv实例。貌似和与child_process没有区别，但是官网文档提到一个共享内存的概念？本章就讨论以下两个问题：
    1. 它的并行是怎么做到？
-   2. 怎么做到共享内存？
-   3. messagechannel和ipc在实现上的差别在哪？
+   2. 怎么做到共享内存？3. messagechannel和ipc在实现上的差别在哪？
 
 
