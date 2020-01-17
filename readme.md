@@ -46,7 +46,11 @@
  
 9. net net模块里除了构建传输层的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` --> `s.listen(...args)`-->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！可是master的server接收了请求，处理逻辑却在子进程中进行？`触发onconnection`-->`RoundRobinHandle#distribute(err, handle)`-->`RoundRobinHandle#handoff`-->` sendHelper(worker.process, message, handle,cb),其中message = { act: 'newconn', key: this.key },handle就是新连接客户端的句柄`。至此，子进程通过管道拿到新连接客户端的句柄，就可以处理了。 以上讲解是tcp在cluster中的流程，其实udp也是类似！
 
-10. http ryan当初在推广nodejs的时，就重点提到http模块带来的优势，`http = net + httpParser` ，先简单走一遍流程：初始化httpServer，它继承了`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `uv_tcp_init、uv_tcp_bind、uv_listen实现tcp的监听`--> 请求进来时，创建socket,`uv_accept()`接收数据-->connectionListenerInternal --> http_parser_execute解析 -->`connectionListenerInternal`-->parserOnHeadersComplete-->`构建出req、res的应用层stream对象,触发request事件交给我们用户层处理`-->...,
+10. http ryan当初在推广nodejs的时，就重点提到http模块带来的优势，当时他提到了keepalive和chunk优化，以及httpParser的强大，`http = net + httpParser` ，先简单走一遍流程，忽略校验这些逻辑：初始化httpServer，它继承了`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `uv_tcp_init、uv_tcp_bind、uv_listen实现tcp的监听`--> 请求进来时，创建socket,`uv_accept()`接收数据-->connectionListenerInternal --> http_parser_execute解析 -->`connectionListenerInternal`-->parserOnHeadersComplete-->`构建出req、res的应用层stream对象,触发request事件交给我们用户层处理`--> ...。
 
-11. worker
+11. worker 关于worker_thread,我们关心它与child_process的区别，单看架构设计图，它也是拥有一个v8实例，一个libuv实例。貌似和与child_process没有区别，但是官网文档提到一个共享内存的概念？本章就讨论以下两个问题：
+   1. 它的并行是怎么做到？
+   2. 怎么做到共享内存？
+   3. messagechannel和ipc在实现上的差别在哪？
+
 
