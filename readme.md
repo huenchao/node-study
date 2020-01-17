@@ -3,7 +3,7 @@
 理解nodejs的架构设计，它代码设计的优点与缺点，更好的掌握nodejs开发，并且更理性的选择出比nodejs更优秀的技术选型。
 
 ### 学习模块的流程
-1. 搞清楚nodejs的启动流程:第一步把根据js2c加载js转c++的代码到内存，然后走main函数，先根据平台特性对标准输入输出流0、1、2进行检查，因为每个进程被正常开启，都会把0，1，2当作stdin stdout、stderr的fd、软连接扩充、注册内部模块。然后初始化v8实例、创建内部模块加载机制，这个加载机制主要是针对自带的c++模块、js模块的。然后构造一个`process`挂到`Global`上，并为`process`附上一些必要的函数与变量，并且通过js定义的加载模式去调用我们自己写的nodejs代码，然后清空一次nexttick。然后跑uv_run。最后退出。
+1. 搞清楚nodejs的启动流程:第一步把根据js2c加载js转c++的代码到内存，然后走main函数，先根据平台特性对标准输入输出流0、1、2进行检查，因为每个进程被正常开启，都会把0，1，2当作stdin stdout、stderr的fd、软连接扩充、注册内部模块。然后初始化v8实例、创建内部模块加载机制，这个加载机制主要是针对自带的c++模块、js模块的。然后构造一个`process`挂到`Global`上，并为`process`附上一些必要的函数与变量，并且通过js定义的加载模式去调用我们自己写的nodejs代码，然后清空一次nexttick。然后跑uv_run。最后退出,debugger细节看issue。
 
 2. timer的设计主要是通过js(宏观)控制超时队列+libuv里(微观)控制超时队列，其实不管是js还是libuv里，都是几乎一摸一样的设计，利用最小堆+链表处理。链表的结构，js源码里的注释就画的很清楚啦～如下所示：
 ```
@@ -44,9 +44,9 @@
   
 8. cluster cluster模块本质上是对child_process的封装，我们先过一遍它的流程：`cluster.fork` -->`cp=child_process#fork()`-->`return new worker(cp)`。这套流程其实就是调用了child_process#fork()，然后把子进程实例用一个worker对象包裹一下返回出来。`NODE_UNIQUE_ID`这个环境变量会在child_process#fork()时传进去，它是为了判断是不是子进程内使用cluster模块而已,这是它的唯一作用。这个模块似乎也就这么点东西，那这一章节我们总要关注点什么，这个问题或许你曾经好奇过：为什么fork的进程里调用多次server.listen(PORT)，却没有报`EADDRINUSE`的错误？其实解决方案或许可以在上一章节找到，但毕竟调用了`server.listen`，内部原理还与net模块有关,我将会在第9章揭开这个谜题。
  
-9. net net模块里除了构建tcp/udp的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` --> `s.listen(...args)`-->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！可是master的server接收了请求，处理逻辑却在子进程中进行？`触发onconnection`-->`RoundRobinHandle#distribute(err, handle)`-->`RoundRobinHandle#handoff`-->` sendHelper(worker.process, message, handle,cb),其中message = { act: 'newconn', key: this.key },handle就是新连接客户端的句柄`。至此，子进程通过管道拿到新连接客户端的句柄，就可以处理了。 以上讲解是tcp在cluster中的流程，其实udp也是类似！
+9. net net模块里除了构建传输层的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` --> `s.listen(...args)`-->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！可是master的server接收了请求，处理逻辑却在子进程中进行？`触发onconnection`-->`RoundRobinHandle#distribute(err, handle)`-->`RoundRobinHandle#handoff`-->` sendHelper(worker.process, message, handle,cb),其中message = { act: 'newconn', key: this.key },handle就是新连接客户端的句柄`。至此，子进程通过管道拿到新连接客户端的句柄，就可以处理了。 以上讲解是tcp在cluster中的流程，其实udp也是类似！
 
-10. http `http = net + httpParser` http其实是继承了`net.Server`,以tcp为例的流程：配置`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `请求进来触发connectionListener`-->`connectionListenerInternal`
+10. http `http = net + httpParser` net里面运用了unix网络编程的那一套实现了传输层，那怎么传到应用层处理呢？ http其实是继承了`net.Server`,以tcp为例的流程：配置`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `请求进来触发connectionListener`-->`connectionListenerInternal`
 -->`利用第5章stream的知识和http_parser`-->parserOnHeadersComplete-->`触发request`-->`如果监听了data，`
 
 11. https
