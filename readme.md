@@ -3,7 +3,7 @@
 理解nodejs的架构设计，它代码设计的优点与缺点，更好的掌握nodejs开发，并且更理性的选择出比nodejs更优秀的技术选型。
 
 ### 学习模块的流程
-1. 搞清楚nodejs的启动流程:gyp编译时执行action-->js2c.py-->NativeModuleLoader::LoadJavaScriptSource()-->node::main()-->InitializeOncePerProcess()(先根据平台特性对标准输入输出流0、1、2进行检查，因为每个进程被正常开启，都会把0，1，2当作stdin stdout、stderr的fd、软连接扩充、注册内部模块) --> NodeMainInstance()、Worker()(初始化v8实例、创建内部模块加载机制，这个加载机制主要是针对自带的c++模块、js模块的。然后构造一个`process`挂到`Global`上，并为`process`附上一些必要的函数与变量，并且通过js定义的加载模式去调用我们自己写的nodejs代码) -->nexttick -->uv_run--> exit
+1. 搞清楚nodejs的启动流程:gyp编译时执行action-->js2c.py(把内置的js代码编译成c++代码存在node_javascripts.cc中)-->生成NativeModuleLoader::LoadJavaScriptSource等方法(在LoadJavaScriptSource被调用,其实就是内置`require`里使用)-->node::main()-->InitializeOncePerProcess()(先根据平台特性对标准输入输出流0、1、2进行检查，因为每个进程被正常开启，都会把0，1，2当作stdin stdout、stderr的fd、软连接扩充、注册内部模块) --> NodeMainInstance()、Worker()(初始化v8实例、创建内部模块加载机制，这个加载机制主要是针对自带的c++模块、js模块的。然后构造一个`process`挂到`Global`上，并为`process`附上一些必要的函数与变量，并且通过js定义的加载模式)-->调用我们自己写的nodejs代码 -->nexttick -->uv_run--> exit
 
 2. timer的设计主要是通过js(宏观)控制超时队列+libuv里(微观)控制超时队列，其实不管是js还是libuv里，都是几乎一摸一样的设计，利用最小堆+链表处理。链表的结构，js源码里的注释就画的很清楚啦～如下所示：
 ```
