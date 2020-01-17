@@ -48,8 +48,8 @@
 
 10. http ryan当初在推广nodejs的时，就重点提到http模块带来的优势，当时他提到了keepalive和chunk优化，以及httpParser的强大，`http = net + httpParser` ，先简单走一遍流程，忽略校验这些逻辑：初始化httpServer，它继承了`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `uv_tcp_init、uv_tcp_bind、uv_listen实现tcp的监听`--> 请求进来时，创建socket,`uv_accept()`接收数据-->connectionListenerInternal --> http_parser_execute解析 -->`connectionListenerInternal`-->parserOnHeadersComplete-->`构建出req、res的应用层stream对象,触发request事件交给我们用户层处理`--> ...。
 
-11. worker 关于worker_thread,我们关心它与child_process的区别，单看架构设计图，它也是拥有一个v8实例，一个libuv实例。貌似和与child_process没有区别，但是官网文档提到一个共享内存的概念？本章就讨论以下三个问题:  2. 怎么做到共享内存？3. messagechannel和ipc在实现上的差别在哪？
-   1. 它的并行是怎么做到？
+11. worker 关于worker_thread,我们关心它与child_process的区别，单看架构设计图，它也是拥有一个v8实例，一个libuv实例。貌似和与child_process没有区别，但是官网文档提到一个共享内存的概念？本章就讨论以下三个问题:  第一：它的并行是怎么做的？第二：怎么做到共享内存？第三： messagechannel和ipc(uds)在实现上的有差别吗？
+
  
 
 
