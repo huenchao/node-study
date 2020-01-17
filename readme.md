@@ -5,7 +5,7 @@
 ### 学习模块的流程
 1. 搞清楚nodejs的启动流程:gyp编译时执行action-->js2c.py(把内置的js代码编译成c++代码存在node_javascripts.cc中)-->生成NativeModuleLoader::LoadJavaScriptSource等方法(在LoadJavaScriptSource被调用,其实就是内置`require`里使用)-->node::main()-->InitializeOncePerProcess()(先根据平台特性对标准输入输出流0、1、2进行检查，因为每个进程被正常开启，都会把0，1，2当作stdin stdout、stderr的fd、软连接扩充、注册内部模块) --> NodeMainInstance()、Worker()(初始化v8实例、创建内部模块加载机制，这个加载机制主要是针对自带的c++模块、js模块的。然后构造一个`process`挂到`Global`上，并为`process`附上一些必要的函数与变量，并且通过js定义的加载模式)-->run_main_node.js调用我们自己写的nodejs代码 -->nexttick -->uv_run--> exit
 
-2. timer的设计主要是通过js(宏观)控制超时队列+libuv里(微观)控制超时队列，其实不管是js还是libuv里，都是几乎一摸一样的设计，利用最小堆+链表处理。链表的结构，js源码里的注释就画的很清楚啦～如下所示：
+2. timer的设计主要是通过js(宏观)控制超时队列+libuv里(微观)控制超时队列，其实不管是js还是libuv里，都是几乎一摸一样的设计，利用最小堆+链表处理。链表的结构，js源码里的注释就画的很清楚啦～如下所示,它的存在也给整个nodejs提供了超时处理机制，这里举个栗子，nodejs中http解析处理的超时时间是2min,net的keepalive时间是5s，这些都是源码里设定的(你可以根据业务需求更改)。
 ```
 // ╔════ > Object Map
 // ║
@@ -29,11 +29,11 @@
 
 ```
 
-3. event的设计就是很常见的pub/sub模式，它的设计里没有任何“异步”的操作，event是node的基石模块，细节看issue。
+3. event的设计就是很常见的pub/sub模式，它的设计里没有任何异步的操作，但是它可以配合process_nexttick实现异步事件。steam的data、read、drain等等事件通知就基于event，并且因为有了stream,也成就了nodejs的非阻塞。
 
-4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况，细节看issue。
+4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况。
 
-5. stream的设计就是为nodejs加上一个背压的机制，也是为了效率。那怎么实现这个背压呢？其实就是利用event模块的能力，数据生产消费不平衡了，就发送事件让一方等一等，数据缓存到哪里呢？那就用buffer(或者直接是原生object)。所以，你在阅读stream之前，请确保你已经阅读了event和buffer模块，因为stream本质上就是event+buffer。这一章非常关键，也比较难，难在内部状态很多，但是你要牢记，它总在“尽可能快”的触发事件通知生产者或者消费者去造数据或者消费数据，细节看issue。
+5. stream的设计就是为nodejs加上一个背压的机制，也是为了效率。那怎么实现这个背压呢？其实就是利用event模块的能力，数据生产消费不平衡了，就发送事件让一方等一等，数据缓存到哪里呢？那就用buffer(或者直接是原生object)。所以，你在阅读stream之前，请确保你已经阅读了event和buffer模块源码，因为stream本质上就是event+buffer(可以不用)。这一章非常关键，也比较难，难在内部状态很多，但是你要牢记，它总在“尽可能快”的触发事件通知生产者或者消费者去造数据或者消费数据。
 
 6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用，细节看issue。
 
@@ -46,10 +46,7 @@
  
 9. net net模块里除了构建传输层的那一套流程外（在libuv的api里实现构建socket、bind、listen、accpet等流程），还与cluster模块有紧密的联系。先看一下代码流程：`s = new net.server()` --> `s.listen(...args)`-->`listenInCluster(...args)`。`listenInCluster`里会区分worker还是master，master就调用`server._listen2(address, port, addressType, backlog, fd)`,如果是worker就调用` cluster._getServer(server, serverQuery, listenOnMasterHandle)`。我们先看看`cluster._getServer`做了什么？它里面会调用`send(message,cb)`其中`message = { cmd: 'NODE_CLUSTER', ...message, seq };`,此外`send`方法在第7章第3小节有提到过,cmd为`NODE_`的包，master会通过`internalMessage`事件来响应接收，`internalMessage`对应的cb里面又调用了一次`server.listen`,这次就真的调用了`server._listen2`,至此，一切真相大白，其实真正的listen全在master中得到监听！可是master的server接收了请求，处理逻辑却在子进程中进行？`触发onconnection`-->`RoundRobinHandle#distribute(err, handle)`-->`RoundRobinHandle#handoff`-->` sendHelper(worker.process, message, handle,cb),其中message = { act: 'newconn', key: this.key },handle就是新连接客户端的句柄`。至此，子进程通过管道拿到新连接客户端的句柄，就可以处理了。 以上讲解是tcp在cluster中的流程，其实udp也是类似！
 
-10. http `http = net + httpParser` net里面运用了unix网络编程的那一套实现了传输层，那怎么传到应用层处理呢？ http其实是继承了`net.Server`,以tcp为例的流程：配置`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `请求进来触发connectionListener`-->`connectionListenerInternal`
--->`利用第5章stream的知识和http_parser`-->parserOnHeadersComplete-->`触发request`-->`如果监听了data，`
+10. http ryan当初在推广nodejs的时，就重点提到http模块带来的优势，`http = net + httpParser` ，先简单走一遍流程：初始化httpServer，它继承了`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `uv_tcp_init、uv_tcp_bind、uv_listen实现tcp的监听`--> 请求进来时，创建socket,`uv_accept()`接收数据-->connectionListenerInternal --> http_parser_execute解析 -->`connectionListenerInternal`-->parserOnHeadersComplete-->`构建出req、res的应用层stream对象,触发request事件交给我们用户层处理`-->...,
 
-11. https
-
-12. worker
+11. worker
 
