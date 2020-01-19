@@ -33,13 +33,13 @@
 
 4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况。
 
-5. stream的设计就是为nodejs加上一个背压的机制，也是为了效率。那怎么实现这个背压呢？其实就是利用event模块的能力，数据生产消费不平衡了，就发送事件让一方等一等，数据缓存到哪里呢？那就用buffer(或者直接是原生object)。所以，你在阅读stream之前，请确保你已经阅读了event和buffer模块源码，因为stream本质上就是event+buffer(可以不用)。这一章非常关键，也比较难，难在内部状态很多，但是你要牢记，它总在“尽可能快”的触发事件通知生产者或者消费者去造数据或者消费数据。
+5. stream的设计就是为nodejs加上一个背压的机制，也是为了效率。那怎么实现这个背压呢？其实就是利用event模块的能力，数据生产消费不平衡了，就发送事件让一方等一等，数据缓存到哪里呢？那就用buffer(或者直接是原生object)。所以，你在阅读stream之前，请确保你已经阅读了event和buffer模块源码，因为stream本质上就是event+buffer(可以不用)。这一章非常关键，也比较难，难在内部状态很多，但是你要牢记，它总在“尽可能快”的触发事件通知生产者或者消费者去造数据或者消费数据，这种‘尽可能快’的感受，你会在源码阅读中感受到，比如你在read数据的时候，发现缓存池里数据低于水位了，会马上触发push的操作。
 
 6. os模块就是利用一些c++方法和系统命令，操作一些系统文件而已。结合1. 我们学到的c++方法的挂载方式，然后利用process.binding导出来给我们的js用，细节看issue。
 
 7. child_process 我们关注以下三个问题:
    1. 第一是如何创建子进程的？js的fork、execfile（exec）最后都是整理参数然后调用spawn，而`ChildProcess.prototype.spawn`内部其实是调用`this._handle.spawn`(其中`this._handle`是`ProcessWrap`的实例,静态方法spawn其实是会调用libuv的`uv_spawn`)。`uv_spawn`里是通过系统调用`fork`的方式创建进程。
-   2. 第二是IPC是怎么实现的？在`uv_spawn`的执行过程中，会判断是不是需要ipc通信，因为在js层面调用fork的时候，会在stdio数据里添加一个`ipc`的字符元素，标识需要ipc,stdio最终呈现的形式类似是这个样子:`[inherits,inherits,inherits,ipc]`.ipc在数组的索引是3，记住，它一定是3！然后会调用`socketpair`生成真正的管道的fd,然后调用fork开启一个子进程，子进程里会调用`uv__process_child_init`,这个函数调用dup2把真正的管道的fd重定向到ipc的索引值上，也就是前面提到的3.然后nodejs子进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的？fork启动的会注入一个`NODE_CHANNEL_FD`的环境变量(这个变量的值就是3，因为子进程需要绑定这个fd，去和父进程通信)。是子进程的话就调用`require('child_process')._forkChild(fd);`。然后`_forkChild`会通过管道让子进程链到父进程开辟的ipc通信专用管道上。然后调用`setupChannel`,它的作用是给子进程和父进程里的child变量附上send方法，监听`internalMessage`内部事件。这样 `子进程<--->（序列化/反序列化）<---> fd 3 <--->（序列化/反序列化）<---->父进程` 就这样抽象的连接上了，最后通过`src/stream_base.cc`中的`StreamBase::WriteString`实现在父子进程间传递。
+   2. 第二是IPC是怎么实现的？在`uv_spawn`的执行过程中，会判断是不是需要ipc通信，因为在js层面调用fork的时候，会在stdio数据里添加一个`ipc`的字符元素，标识需要ipc,stdio最终呈现的形式类似是这个样子:`[inherits,inherits,inherits,ipc]`.ipc在数组的索引是3，记住，它一定是3！然后会调用`socketpair`生成真正的管道的fd,然后调用fork开启一个子进程，子进程里会调用`uv__process_child_init`,这个函数调用dup2把真正的管道的fd重定向到ipc的索引值上，也就是前面提到的3.然后nodejs子进程在执行的时候，会调用`prepareMainThreadExecution`,这个函数会调用`setupChildProcessIpcChannel`来判断是否是不是通过fork方式启动的？fork启动的会注入一个`NODE_CHANNEL_FD`的环境变量(这个变量的值就是3，因为子进程需要绑定这个fd，去和父进程通信)。是子进程的话就调用`require('child_process')._forkChild(fd);`。然后`_forkChild`会通过管道让子进程链到父进程开辟的ipc通信专用管道上。然后调用`setupChannel`,它的作用是给子进程和父进程里的child变量附上send方法，监听`internalMessage`内部事件。这样 `子进程<--->（序列化/反序列化）<---> fd 3 <--->（序列化/反序列化）<---->父进程` 就这样抽象的连接上了，最后通过`src/stream_base.cc`中的`StreamBase::WriteString`实现在父子进程间json数据的传递。
    3. IPC通信时，`net.Server#getConnections`，`net.Server#close`失效咋恢复？ 序列化/反序列化会导致部分实例的api失效，原因很简单，数据是存在内存里的，序列化后就失效了。node内部会对handle类型进行判断，用`handleConversion`的序列化/反序列化方法，去把handle还原。我们再深入一下第二个问题，如果`send`方法被调用时有handle，会在message对象里设置一个cmd的属性，它有个固定的值`NODE_HANDLE`,`NODE_`开头的cmd值代表它是内部信息，需要特殊处理，然后触发`internalMessage`事件，然后用从`handleConversion`特定的方法还原成js对象,最后在`emit`一个`message`，把还原信息丢给用户层。仔细看源码，你会发现有个`getSocketList`方法，在它里面会调用`SocketListSend`或`SocketListReceive`，这两个api的作用就是用来保存这些在父子进程中使用的handle。然后每次在调用与内存有关系的相关api时，会结合这两个方法，相互通信父子进程，维护这些handles的内存状态。
   
 8. cluster cluster模块本质上是对child_process的封装，我们先过一遍它的流程：`cluster.fork` -->`cp=child_process#fork()`-->`return new worker(cp)`。这套流程其实就是调用了child_process#fork()，然后把子进程实例用一个worker对象包裹一下返回出来。`NODE_UNIQUE_ID`这个环境变量会在child_process#fork()时传进去，它是为了判断是不是子进程内使用cluster模块而已,这是它的唯一作用。这个模块似乎也就这么点东西，那这一章节我们总要关注点什么，这个问题或许你曾经好奇过：为什么fork的进程里调用多次server.listen(PORT)，却没有报`EADDRINUSE`的错误？其实解决方案或许可以在上一章节找到，但毕竟调用了`server.listen`，内部原理还与net模块有关,我将会在第9章揭开这个谜题。
@@ -48,7 +48,11 @@
 
 10. http ryan当初在推广nodejs的时，就重点提到http模块带来的优势，当时他提到了keepalive和chunk优化，以及httpParser的强大，`http = net + httpParser` ，先简单走一遍流程，忽略校验这些逻辑：初始化httpServer，它继承了`net.Server`-->httpServer实例监听`connect`、`request`事件--> `net.Server#listen(...args)` --> `uv_tcp_init、uv_tcp_bind、uv_listen实现tcp的监听`--> 请求进来时，创建socket,`uv_accept()`接收数据-->connectionListenerInternal --> http_parser_execute解析 -->`connectionListenerInternal`-->parserOnHeadersComplete-->`构建出req、res的应用层stream对象,触发request事件交给我们用户层处理`--> ...。
 
-11. worker_thread 单看架构设计图，它也是拥有一个v8实例，一个libuv实例。貌似和与child_process没有区别，但官网文档提到一个共享内存的概念、而且说它更轻量？既然每个worker都有一个v8实例，必然造成内存隔离，而且每个worker都有这些实例，那怎么说它更轻量？本章就讨论以下三个问题:  第一：worker的并行是怎么做的？第二：怎么做到共享内存？第三：IMC和IPC(UDS)在实现上的有差别吗？我们先跑一遍流程: `new Worker`-->`Worker::New,里面有个Environment::AllocateThreadId()生成一个thread_id_` -->`this[kHandle].startThread()`-->` Worker::StartThread()` -->`Worker::Run`-->`WorkerThreadData data(初始化v8实例)、InitializeLibuv(初始化libuv)`
+11. libuv的线程池 因为12章准备介绍worker_thread，所以这一章过一遍libuv的线程池大致运作流程。这里以fs#api作为药引子介绍线程池的创建->根据信号量如何和uv_loop主线程通信的： fs#access --> binding.access(...,new FSReqWrap())（这个Wrap包裹了`uv_fs_access`） --> uv_fs_access--> libuv的线程池是懒加载的，调用uv__work_submit(for循环`UV_THREADPOOL_SIZE`次调用`uv_thread_create`创建线程 --> 然后等待`sem`信号量发送给libuv主线程，表示线程创建完毕，与此同时worker被创建好时会马上调用`uv_sem_post`告知主线程创建成功，然后调用`uv_cond_wait`让线程阻塞等待被唤起执行任务 --> 前面都做好后调用`post(&w->wq, kind)`表示用线程池进行操作工作了，然后判断一下这是那种类型的io操作（快i/o、慢i/o、cpu密集型），插入wq队列的尾部等待被执行，然后调用`uv_cond_signal`去唤醒一个阻塞进程进行工作w->work(w) --> 线程完成后调用`uv_async_send`让fd `async_wfd`可读 -->uv_run的过程中走到`uv__io_poll`发现这个fd可读 --> uv__async_io去已完成的异步队列里取出来执行回调  --> 而已经完成任务的线程会继续调用`uv_cond_wait`等待被唤起，以上过程我们发现nodejs的线程通信主要依靠信号量:创建->阻塞->加锁->被唤起->解锁->阻塞。
+
+12. worker_thread 我关心两个问题：
+   1.线程数据如何通信？
+   2.本章就讨论以下三个问题:  第一：worker的并行是怎么做的？第二：怎么做到共享内存？第三：IMC和IPC(UDS)在实现上的有差别吗？我们先跑一遍流程: `new Worker`-->`Worker::New,里面有个Environment::AllocateThreadId()生成一个thread_id_` -->`this[kHandle].startThread()`-->` Worker::StartThread()` -->`Worker::Run`-->`WorkerThreadData data(初始化v8实例)、InitializeLibuv(初始化libuv)`
 
  
 
