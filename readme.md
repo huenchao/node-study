@@ -29,7 +29,7 @@
 
 ```
 
-3. event的设计就是很常见的pub/sub模式，它的设计里没有任何异步的操作，但是它可以配合process_nexttick实现异步事件。steam的data、read、drain等等事件通知就基于event，并且因为有了stream,也成就了nodejs的非阻塞。
+3. event的设计就是很常见的pub/sub模式，它的设计里没有任何异步的操作，但是它可以配合process_nexttick实现异步事件。stream的data、read、drain等等事件通知就基于event，并且因为有了stream,也成就了nodejs的非阻塞。
 
 4. buffer是为了js处理二进制数据搞出来的模块。buffer基于typedarray配合slab分配的机制，帮助cpu高效处理数据，但是因为本身数据对齐的原因，也可能造成内存使用浪费的情况。
 
@@ -50,7 +50,7 @@
 
 11. libuv的threadpool 这里以fs#api作为药引子介绍线程池的创建->根据信号量如何和uv_loop主线程通信的： fs#access --> binding.access(...,new FSReqWrap())（这个Wrap包裹了`uv_fs_access`） --> uv_fs_access--> libuv的线程池是懒加载的，调用uv__work_submit(for循环`UV_THREADPOOL_SIZE`次调用`uv_thread_create`创建线程 --> 然后等待`sem`信号量发送给libuv主线程，表示线程创建完毕，与此同时worker被创建好时会马上调用`uv_sem_post`告知主线程创建成功，然后调用`uv_cond_wait`让线程阻塞等待被唤起执行任务 --> 前面都做好后调用`post(&w->wq, kind)`表示用线程池进行操作工作了，然后判断一下这是那种类型的io操作（快i/o、慢i/o、cpu密集型），插入wq队列的尾部等待被执行，然后调用`uv_cond_signal`去唤醒一个阻塞进程进行工作w->work(w) --> 线程完成后调用`uv_async_send`让fd `async_wfd`可读 -->uv_run的过程中走到`uv__io_poll`发现这个fd可读 --> uv__async_io去已完成的异步队列里取出来执行回调  --> 而已经完成任务的线程会继续调用`uv_cond_wait`等待被唤起，以上过程我们发现nodejs的线程通信主要依靠信号量:创建->阻塞->加锁->被唤起->解锁->阻塞。
 
-12. worker_threads 本来有了11章，并不打算继续看worker_threads的源码了，可是好奇心使得我最后发现worker_thread模块不是复用libuv的线程池，它是需要用户手动创建的线程，而且我也好奇worker_thread的线程通信是不是有别的新方案，那用什么方式实现线程间通信？过一下流程:`MessageChannel`--> `p1 = MessagePort::New(env, context);p2 = MessagePort::New(env, context); ` --> `Entangle(p1,p2)这一步的作用是标识p1,p2是siblings的关系，两端链接起来通过指针相互应用，互为siblings的关系。`那怎么相互之间怎么知道消息传过来了呢？我先看了一下`PostMessage`的代码，发现它做两件事情(1.序列化了传输的msg、2.检查目标port是否合理，如果存在且合理，就把msg放到队列里，等待其他线程调用)。那怎么在libuv里触发通知呢？答案在：`uv_async_t async_`,nodejs会把`MessagePort`的实例绑到`async_`上，当触发postmessage->`uv_async_send`-->uv__io_poll-->调用onmessage --> 还记得`Entangle(p1,p2)这一步吗？加入p2中调用触发postmessage，会找siblings的关系，最终找到p1,然后通过async_ 找到存放msg队列里的数据，进行消费。`。
+12. worker_threads 本来有了11章，并不打算继续看worker_threads的源码了，可是好奇心使得我最后发现worker_thread模块不是复用libuv的线程池，它是需要用户手动创建的线程，而且我也好奇worker_thread的线程通信是不是有别的新方案，那用什么方式实现线程间通信？过一下流程:`MessageChannel`--> `p1 = MessagePort::New(env, context);p2 = MessagePort::New(env, context); ` --> `Entangle(p1,p2)这一步的作用是标识p1,p2是siblings的关系，两端链接起来通过指针相互引用，互为siblings的关系。`那怎么相互之间怎么知道消息传过来了呢？我先看了一下`PostMessage`的代码，发现它做两件事情(1.序列化了传输的msg、2.检查目标port是否合理，如果存在且合理，就把msg放到队列里，等待其他线程调用)。那怎么在libuv里触发通知呢？答案在：`uv_async_t async_`,nodejs会把`MessagePort`的实例绑到`async_`上，当触发postmessage->`uv_async_send`-->uv__io_poll-->调用onmessage --> 还记得`Entangle(p1,p2)这一步吗？加入p2中调用触发postmessage，会找siblings的关系，最终找到p1,然后通过async_ 找到存放msg队列里的数据，进行消费。`。
    
 
 
