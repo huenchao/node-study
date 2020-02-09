@@ -5,4 +5,4 @@
        
        
        
-npm run dev --> egg-bin dev --> this.load --> this.start --> this\[DISPATCH\]() -->
+npm run dev --> egg-bin dev --> this.load --> this.start --> this\[DISPATCH\]() --> const command = new DevCommand() --> command\[DISPATCH\]() --> this.helper.callFn(this.run, \[ context \], this) --> this.helper.forkNode(this.serverBin, devArgs, options) --> cp.fork(modulePath, args, options)【这个时候parent出现了】--> require('egg-cluster').startCluster 
