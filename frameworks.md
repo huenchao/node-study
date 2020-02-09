@@ -5,4 +5,4 @@
        
        
        
-npm run dev --> egg-bin dev --> this.load --> this.start --> this[DISPATCH]() -->
+npm run dev --> egg-bin dev --> this.load --> this.start --> this\[DISPATCH\]() -->
